@@ -1,25 +1,30 @@
 # Build stage for Playwright dependencies
-FROM ubuntu:20.04 AS playwright-deps
+# Uses the same Go module as the app (golang:1.26.1-trixie, matching the final
+# debian:trixie-slim image) so the local `replace` for playwright-go in go.mod
+# applies: upstream playwright-community/playwright-go stopped publishing new
+# versions (merged back into github.com/mxschmitt/playwright-go), and every
+# version we can pull as playwright-community still ships the driver via the
+# old playwright.azureedge.net zip CDN, which returns 404 for linux-arm64 on
+# all mirrors (verified for 1.52.0, 1.60.0, 1.61.1 — a live CDN issue, not a
+# version problem). Newer driver versions (1.61.1+) fetch the driver from the
+# npm registry + nodejs.org instead, which works. thirdparty/playwright-go is
+# a vendored copy of playwright-community/playwright-go v0.6100.0 (source is
+# identical to github.com/mxschmitt/playwright-go v0.6100.0, just with the
+# module path renamed back) so we get that download path without needing a
+# module the rest of the code can't import.
+FROM golang:1.26.1-trixie AS playwright-deps
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
-#ENV PLAYWRIGHT_DRIVER_PATH=/opt/
-RUN export PATH=$PATH:/usr/local/go/bin:/root/go/bin \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl wget \
-    && wget -q https://go.dev/dl/go1.26.1.linux-amd64.tar.gz \
-    && tar -C /usr/local -xzf go1.26.1.linux-amd64.tar.gz \
-    && rm go1.26.1.linux-amd64.tar.gz \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && go install github.com/playwright-community/playwright-go/cmd/playwright@latest \
-    && mkdir -p /opt/browsers \
-    && playwright install chromium --with-deps
+WORKDIR /app
+COPY go.mod go.sum ./
+COPY thirdparty ./thirdparty
+RUN go mod download \
+    && go run github.com/playwright-community/playwright-go/cmd/playwright install chromium --with-deps
 
 # Build stage
 FROM golang:1.26.1-trixie AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
+COPY thirdparty ./thirdparty
 RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /usr/bin/google-maps-scraper
@@ -27,7 +32,7 @@ RUN CGO_ENABLED=0 go build -ldflags="-w -s" -o /usr/bin/google-maps-scraper
 # Final stage
 FROM debian:trixie-slim
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
-ENV PLAYWRIGHT_DRIVER_PATH=/opt
+ENV PLAYWRIGHT_DRIVER_PATH=/opt/ms-playwright-go/1.61.1
 
 # Install only the necessary dependencies in a single layer
 RUN apt-get update && apt-get install -y --no-install-recommends \
